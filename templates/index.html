@@ -6,6 +6,7 @@
   <title>Cloud Drive</title>
   <link rel="stylesheet" href="/static/css/style.css">
   <link rel="icon" type="image/png" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2002/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🛡️</text></svg>">
+  <meta name="csrf-token" content="{{ csrf_token }}">
 </head>
 <body>
   
@@ -37,7 +38,7 @@
         </div>
         
         <!-- Action Buttons -->
-        <button id="upload-btn" class="btn btn-primary" onclick="document.getElementById('upload-input').click()">📤 Upload</button>
+        <button id="upload-btn" class="btn btn-primary">📤 Upload</button>
         <button id="create-folder-btn" class="btn btn-secondary">📁 New Folder</button>
         <input type="file" id="upload-input" style="display: none;">
         

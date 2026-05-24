@@ -1,9 +1,11 @@
-from flask import Flask, render_template, request, redirect, session, jsonify, send_from_directory
+from flask import Flask, render_template, request, redirect, session, jsonify, send_from_directory, abort
 from functools import wraps
 import os
 import shutil
 import datetime
 import argparse
+import secrets
+import logging
 
 # Default configurations
 DEFAULT_BASE_DIR = r"D:\."
@@ -19,7 +21,8 @@ parser.add_argument("--host", default=DEFAULT_HOST, help="Server host")
 parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Server port")
 parser.add_argument("--user", default=DEFAULT_USERNAME, help="Username for authentication")
 parser.add_argument("--pwd", default=DEFAULT_PASSWORD, help="Password for authentication")
-parser.add_argument("--ssl", choices=['none', 'adhoc'], default='none', help="SSL mode: none, adhoc")
+parser.add_argument("--ssl", choices=['none', 'adhoc'], default='adhoc',
+                    help="SSL mode: 'adhoc' (self-signed HTTPS, default) or 'none' (plain HTTP, insecure)")
 args, unknown = parser.parse_known_args()
 
 BASE_DIR = os.path.abspath(args.dir)
@@ -35,10 +38,9 @@ app = Flask(__name__, template_folder='templates', static_folder='static')
 app.secret_key = os.urandom(24)
 
 # Configure Flask session cookie security
-app.permanent_session_lifetime = datetime.timedelta(days=7)
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE='Lax',
+    SESSION_COOKIE_SAMESITE='Strict',
     SESSION_COOKIE_SECURE=(SSL_MODE == 'adhoc')
 )
 
@@ -48,6 +50,38 @@ if not os.path.exists(BASE_DIR):
         os.makedirs(BASE_DIR, exist_ok=True)
     except Exception as e:
         print(f"Warning: Could not create base directory {BASE_DIR}: {e}")
+
+# -------- AUDIT LOGGING --------
+audit_logger = logging.getLogger('audit')
+audit_handler = logging.FileHandler('server_audit.log')
+audit_handler.setFormatter(logging.Formatter('%(asctime)s | %(message)s'))
+audit_logger.addHandler(audit_handler)
+audit_logger.setLevel(logging.INFO)
+
+def audit_log(action, target):
+    user = session.get("username", "unknown")
+    audit_logger.info(f"{user} | {action} | {target}")
+
+# -------- CSRF PROTECTION --------
+@app.before_request
+def ensure_csrf_token():
+    if 'csrf_token' not in session:
+        session['csrf_token'] = secrets.token_hex(32)
+
+@app.context_processor
+def inject_csrf():
+    return dict(csrf_token=session.get('csrf_token', ''))
+
+def csrf_required(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        token = request.headers.get('X-CSRF-Token') or \
+                request.form.get('_csrf_token') or \
+                (request.get_json(silent=True) or {}).get('csrf_token')
+        if not token or token != session.get('csrf_token'):
+            return jsonify({"error": "CSRF validation failed"}), 403
+        return f(*args, **kwargs)
+    return wrapper
 
 # -------- SECURITY: PATH TRAVERSAL PROTECTION --------
 def safe_join(base, *paths):
@@ -136,14 +170,19 @@ def login():
         return redirect("/")
         
     if request.method == "POST":
+        # Validate CSRF token on login
+        form_token = request.form.get('_csrf_token')
+        if not form_token or form_token != session.get('csrf_token'):
+            return render_template("login.html", error="Session expired, please try again"), 403
+            
         username = request.form.get("username")
         password = request.form.get("password")
         
-        # Simple, exact comparison for custom access authentication
         if username == USERNAME and password == PASSWORD:
-            session.permanent = True
             session["logged_in"] = True
             session["username"] = username
+            session['csrf_token'] = secrets.token_hex(32)  # rotate CSRF on login
+            audit_log("LOGIN_SUCCESS", username)
             return redirect("/")
         else:
             return render_template("login.html", error="Invalid username or password")
@@ -152,6 +191,7 @@ def login():
 
 @app.route("/logout")
 def logout():
+    audit_log("LOGOUT", "")
     session.clear()
     return redirect("/login")
 
@@ -236,6 +276,7 @@ def api_stream_file(req_path):
 
 @app.route("/api/upload", methods=["POST"])
 @login_required
+@csrf_required
 def api_upload_file():
     if 'file' not in request.files:
         return jsonify({"error": "No file part in request"}), 400
@@ -253,7 +294,6 @@ def api_upload_file():
     if not os.path.exists(target_dir) or not os.path.isdir(target_dir):
         return jsonify({"error": "Target directory does not exist"}), 400
 
-    # Ensure filename is safe and has no path separators
     filename = os.path.basename(file.filename)
     if not filename:
         return jsonify({"error": "Invalid filename"}), 400
@@ -262,12 +302,14 @@ def api_upload_file():
     
     try:
         file.save(dest_path)
+        audit_log("UPLOAD", dest_path)
         return jsonify({"status": "success", "message": "File uploaded successfully"})
     except Exception as e:
         return jsonify({"error": f"Failed to save file: {str(e)}"}), 500
 
 @app.route("/api/delete", methods=["POST"])
 @login_required
+@csrf_required
 def api_delete():
     data = request.get_json() or {}
     target = data.get("path", "")
@@ -277,7 +319,6 @@ def api_delete():
     except PermissionError as pe:
         return jsonify({"error": str(pe)}), 403
 
-    # Prevent deleting the root directory
     if abs_path == os.path.abspath(BASE_DIR):
         return jsonify({"error": "Cannot delete root directory"}), 400
 
@@ -289,12 +330,14 @@ def api_delete():
             shutil.rmtree(abs_path)
         else:
             os.remove(abs_path)
+        audit_log("DELETE", abs_path)
         return jsonify({"status": "success", "message": "Item deleted successfully"})
     except Exception as e:
         return jsonify({"error": f"Failed to delete item: {str(e)}"}), 500
 
 @app.route("/api/rename", methods=["POST"])
 @login_required
+@csrf_required
 def api_rename():
     data = request.get_json() or {}
     old_path = data.get("old_path", "")
@@ -311,12 +354,10 @@ def api_rename():
     if not os.path.exists(old_abs):
         return jsonify({"error": "Source item not found"}), 404
 
-    # Sanitize new filename to ensure it contains no folder structures
     new_name = os.path.basename(new_name)
     if not new_name:
         return jsonify({"error": "Invalid target name"}), 400
 
-    # Ensure it stays inside the parent folder
     parent_dir = os.path.dirname(old_abs)
     new_abs = safe_join(parent_dir, new_name)
 
@@ -325,12 +366,14 @@ def api_rename():
 
     try:
         os.rename(old_abs, new_abs)
+        audit_log("RENAME", f"{old_abs} -> {new_abs}")
         return jsonify({"status": "success", "message": "Item renamed successfully"})
     except Exception as e:
         return jsonify({"error": f"Failed to rename item: {str(e)}"}), 500
 
 @app.route("/api/create_folder", methods=["POST"])
 @login_required
+@csrf_required
 def api_create_folder():
     data = request.get_json() or {}
     parent_path = data.get("path", "")
@@ -352,9 +395,20 @@ def api_create_folder():
 
     try:
         os.makedirs(new_dir_abs, exist_ok=True)
+        audit_log("CREATE_FOLDER", new_dir_abs)
         return jsonify({"status": "success", "message": "Folder created successfully"})
     except Exception as e:
         return jsonify({"error": f"Failed to create folder: {str(e)}"}), 500
+
+# -------- SECURITY HEADERS --------
+@app.after_request
+def add_security_headers(resp):
+    resp.headers['X-Content-Type-Options'] = 'nosniff'
+    resp.headers['X-Frame-Options'] = 'DENY'
+    resp.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'"
+    resp.headers['X-XSS-Protection'] = '0'
+    resp.headers['Referrer-Policy'] = 'no-referrer'
+    return resp
 
 # -------- RUN SERVER --------
 if __name__ == "__main__":
@@ -374,11 +428,6 @@ if __name__ == "__main__":
     }
 
     if SSL_MODE == 'adhoc':
-        try:
-            import PyOpenSSL
-            run_args["ssl_context"] = 'adhoc'
-        except ImportError:
-            print("Warning: 'pyOpenSSL' is required for adhoc SSL. Falling back to HTTP.")
-            print("To resolve, run: pip install pyOpenSSL")
+        run_args["ssl_context"] = 'adhoc'
 
     app.run(**run_args)

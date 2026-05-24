@@ -30,9 +30,14 @@ const actionModal = document.getElementById('action-modal');
 const actionModalTitle = document.getElementById('action-modal-title');
 const actionModalBody = document.getElementById('action-modal-body');
 
+// CSRF token helper
+function getCsrfToken() {
+  const meta = document.querySelector('meta[name="csrf-token"]');
+  return meta ? meta.getAttribute('content') : '';
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
-  // Parse path from URL hash if present
   const hashPath = window.location.hash.replace(/^#\/?/, '');
   currentPath = hashPath;
   
@@ -65,10 +70,60 @@ function setupEventListeners() {
   // Folder creation
   createFolderBtn.addEventListener('click', showCreateFolderModal);
 
+  // Upload button triggers file picker
+  document.getElementById('upload-btn').addEventListener('click', () => {
+    uploadInput.click();
+  });
+
   // File Input Upload
   uploadInput.addEventListener('change', (e) => {
     if (e.target.files.length > 0) {
       uploadFiles(e.target.files);
+    }
+  });
+
+  // Event delegation for file cards and action buttons
+  filesContainer.addEventListener('click', (e) => {
+    const renameBtn = e.target.closest('[data-action="rename"]');
+    const deleteBtn = e.target.closest('[data-action="delete"]');
+    const card = e.target.closest('.file-card, .file-row');
+
+    if (renameBtn) {
+      e.stopPropagation();
+      showRenameModal(decodeURIComponent(renameBtn.dataset.path), decodeURIComponent(renameBtn.dataset.name));
+      return;
+    }
+
+    if (deleteBtn) {
+      e.stopPropagation();
+      showDeleteModal(decodeURIComponent(deleteBtn.dataset.path), decodeURIComponent(deleteBtn.dataset.name), deleteBtn.dataset.isdir === 'true');
+      return;
+    }
+
+    if (card) {
+      handleItemClick(decodeURIComponent(card.dataset.path), card.dataset.isdir === 'true', card.dataset.type);
+    }
+  });
+
+  // Event delegation for action modal (cancel, confirm-delete)
+  actionModalBody.addEventListener('click', (e) => {
+    const cancelBtn = e.target.closest('[data-action="cancel"]');
+    const deleteBtn = e.target.closest('[data-action="confirm-delete"]');
+
+    if (cancelBtn) {
+      closeAllModals();
+    }
+
+    if (deleteBtn) {
+      executeDelete(window.targetDeleteVal);
+    }
+  });
+
+  // Event delegation for toast close buttons
+  toastContainer.addEventListener('click', (e) => {
+    const closeBtn = e.target.closest('.toast-close');
+    if (closeBtn) {
+      closeBtn.parentElement.remove();
     }
   });
 
@@ -240,10 +295,10 @@ function renderGrid(items) {
     const pathArg = currentPath ? `${currentPath}/${item.name}` : item.name;
     
     html += `
-      <div class="file-card glass" onclick="handleItemClick('${pathArg.replace(/'/g, "\\'")}', ${item.is_dir}, '${item.type}')">
+      <div class="file-card glass" data-path="${encodeURIComponent(pathArg)}" data-isdir="${item.is_dir}" data-type="${item.type}">
         <div class="file-actions">
-          <button class="action-btn" onclick="event.stopPropagation(); showRenameModal('${pathArg.replace(/'/g, "\\'")}', '${item.name.replace(/'/g, "\\'")}')" title="Rename">✏️</button>
-          <button class="action-btn delete-btn" onclick="event.stopPropagation(); showDeleteModal('${pathArg.replace(/'/g, "\\'")}', '${item.name.replace(/'/g, "\\'")}', ${item.is_dir})" title="Delete">🗑️</button>
+          <button class="action-btn" data-action="rename" data-path="${encodeURIComponent(pathArg)}" data-name="${encodeURIComponent(item.name)}" title="Rename">✏️</button>
+          <button class="action-btn delete-btn" data-action="delete" data-path="${encodeURIComponent(pathArg)}" data-name="${encodeURIComponent(item.name)}" data-isdir="${item.is_dir}" title="Delete">🗑️</button>
         </div>
         <div class="file-icon-wrapper">${icon}</div>
         <div class="file-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</div>
@@ -265,14 +320,14 @@ function renderList(items) {
     const pathArg = currentPath ? `${currentPath}/${item.name}` : item.name;
     
     html += `
-      <div class="file-row glass" onclick="handleItemClick('${pathArg.replace(/'/g, "\\'")}', ${item.is_dir}, '${item.type}')">
+      <div class="file-row glass" data-path="${encodeURIComponent(pathArg)}" data-isdir="${item.is_dir}" data-type="${item.type}">
         <div class="file-row-icon">${icon}</div>
         <div class="file-row-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</div>
         <div class="file-row-meta">${item.is_dir ? 'Folder' : item.size_str}</div>
         <div class="file-row-meta">${item.mtime_str || ''}</div>
         <div class="file-row-actions">
-          <button class="action-btn" onclick="event.stopPropagation(); showRenameModal('${pathArg.replace(/'/g, "\\'")}', '${item.name.replace(/'/g, "\\'")}')" title="Rename">✏️</button>
-          <button class="action-btn delete-btn" onclick="event.stopPropagation(); showDeleteModal('${pathArg.replace(/'/g, "\\'")}', '${item.name.replace(/'/g, "\\'")}', ${item.is_dir})" title="Delete">🗑️</button>
+          <button class="action-btn" data-action="rename" data-path="${encodeURIComponent(pathArg)}" data-name="${encodeURIComponent(item.name)}" title="Rename">✏️</button>
+          <button class="action-btn delete-btn" data-action="delete" data-path="${encodeURIComponent(pathArg)}" data-name="${encodeURIComponent(item.name)}" data-isdir="${item.is_dir}" title="Delete">🗑️</button>
         </div>
       </div>
     `;
@@ -437,6 +492,7 @@ function uploadFiles(files) {
   
   const xhr = new XMLHttpRequest();
   xhr.open('POST', '/api/upload', true);
+  xhr.setRequestHeader('X-CSRF-Token', getCsrfToken());
   
   xhr.upload.onprogress = (e) => {
     if (e.lengthComputable) {
@@ -473,19 +529,20 @@ function uploadFiles(files) {
 function showCreateFolderModal() {
   actionModalTitle.textContent = 'Create New Folder';
   actionModalBody.innerHTML = `
-    <form id="folder-form" onsubmit="handleCreateFolderSubmit(event)" class="modal-form">
+    <form id="folder-form" class="modal-form">
       <div class="form-group">
         <label class="form-label" for="folder-name">Folder Name</label>
         <input class="form-control" type="text" id="folder-name" required placeholder="Enter folder name" autocomplete="off">
       </div>
       <div class="modal-actions">
-        <button class="btn btn-secondary" type="button" onclick="closeAllModals()">Cancel</button>
+        <button class="btn btn-secondary" type="button" data-action="cancel">Cancel</button>
         <button class="btn btn-primary" type="submit">Create</button>
       </div>
     </form>
   `;
   actionModal.classList.add('active');
   document.getElementById('folder-name').focus();
+  document.getElementById('folder-form').addEventListener('submit', handleCreateFolderSubmit);
 }
 
 async function handleCreateFolderSubmit(e) {
@@ -498,7 +555,7 @@ async function handleCreateFolderSubmit(e) {
   try {
     const response = await fetch('/api/create_folder', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
       body: JSON.stringify({ path: currentPath, name: folderName })
     });
     
@@ -516,23 +573,23 @@ async function handleCreateFolderSubmit(e) {
 function showRenameModal(fullPath, currentName) {
   actionModalTitle.textContent = 'Rename Item';
   actionModalBody.innerHTML = `
-    <form id="rename-form" onsubmit="handleRenameSubmit(event, oldPathVal)" class="modal-form">
+    <form id="rename-form" class="modal-form">
       <div class="form-group">
         <label class="form-label" for="new-name">New Name</label>
         <input class="form-control" type="text" id="new-name" value="${escapeHtml(currentName)}" required placeholder="Enter new name" autocomplete="off">
       </div>
       <div class="modal-actions">
-        <button class="btn btn-secondary" type="button" onclick="closeAllModals()">Cancel</button>
+        <button class="btn btn-secondary" type="button" data-action="cancel">Cancel</button>
         <button class="btn btn-primary" type="submit">Rename</button>
       </div>
     </form>
   `;
-  // Store full path in temporary variable so submit handles it
   window.oldPathVal = fullPath;
   
   actionModal.classList.add('active');
   const input = document.getElementById('new-name');
   input.focus();
+  document.getElementById('rename-form').addEventListener('submit', (e) => handleRenameSubmit(e, fullPath));
   
   const dotIndex = currentName.lastIndexOf('.');
   if (dotIndex > 0) {
@@ -552,7 +609,7 @@ async function handleRenameSubmit(e, oldPath) {
   try {
     const response = await fetch('/api/rename', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
       body: JSON.stringify({ old_path: oldPath, new_name: newName })
     });
     
@@ -575,8 +632,8 @@ function showDeleteModal(fullPath, filename, isDir) {
       This cannot be undone.
     </div>
     <div class="modal-actions">
-      <button class="btn btn-secondary" onclick="closeAllModals()">Cancel</button>
-      <button class="btn btn-danger" onclick="executeDelete(targetDeleteVal)">Yes, Delete</button>
+      <button class="btn btn-secondary" type="button" data-action="cancel">Cancel</button>
+      <button class="btn btn-danger" type="button" data-action="confirm-delete">Yes, Delete</button>
     </div>
   `;
   window.targetDeleteVal = fullPath;
@@ -589,7 +646,7 @@ async function executeDelete(targetPath) {
   try {
     const response = await fetch('/api/delete', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
       body: JSON.stringify({ path: targetPath })
     });
     
@@ -640,7 +697,7 @@ function showToast(message, type = 'info') {
       <span>${icon}</span>
       <span>${escapeHtml(message)}</span>
     </div>
-    <button class="toast-close" onclick="this.parentElement.remove()">×</button>
+    <button class="toast-close">×</button>
   `;
   
   toastContainer.appendChild(toast);
