@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cloud Drive</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <link rel="icon" type="image/png" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2002/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🛡️</text></svg>">
+</head>
+<body>
+  
+  <!-- Header Bar -->
+  <header class="app-header glass">
+    <div class="logo-section">
+      <span style="font-size: 1.3rem;">🛡️</span>
+      <a href="#" class="logo-text">Media Cloud</a>
+    </div>
+    <div class="user-info">
+      <a href="/logout" class="btn btn-secondary btn-sm" style="padding: 6px 12px; font-size: 0.85rem;">Logout</a>
+    </div>
+  </header>
+
+  <!-- Main Content Container -->
+  <main class="main-container">
+    
+    <!-- Toolbar: Breadcrumbs, Search, Actions, View, Sort -->
+    <div class="toolbar glass">
+      <div id="breadcrumb" class="breadcrumb">
+        <a href="#" class="breadcrumb-item">Root</a>
+      </div>
+      
+      <div class="controls">
+        <!-- Search bar -->
+        <div class="search-wrapper">
+          <span class="search-icon">🔍</span>
+          <input id="search-input" class="form-control search-input" type="text" placeholder="Search..." autocomplete="off">
+        </div>
+        
+        <!-- Action Buttons -->
+        <button id="upload-btn" class="btn btn-primary" onclick="document.getElementById('upload-input').click()">📤 Upload</button>
+        <button id="create-folder-btn" class="btn btn-secondary">📁 New Folder</button>
+        <input type="file" id="upload-input" style="display: none;">
+        
+        <!-- Sorting -->
+        <select id="sort-select" class="select-control">
+          <option value="name-asc">A-Z</option>
+          <option value="name-desc">Z-A</option>
+          <option value="size-asc">Size (Small)</option>
+          <option value="size-desc">Size (Large)</option>
+        </select>
+        
+        <!-- View Toggle -->
+        <div class="view-toggle">
+          <button id="view-grid-btn" class="view-btn active" title="Grid View">🎛️</button>
+          <button id="view-list-btn" class="view-btn" title="List View">☰</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Upload Progress bar (Sticky top inline) -->
+    <div id="upload-progress-container" class="upload-progress-container" style="display: none;">
+      <span>Uploading...</span>
+      <div class="upload-progress-bar">
+        <div id="upload-progress-fill" class="upload-progress-fill"></div>
+      </div>
+      <span id="upload-progress-percent">0%</span>
+    </div>
+
+    <!-- Dynamic Files List Container -->
+    <div id="files-container" class="files-container">
+      <!-- Loaded dynamically via app.js -->
+    </div>
+
+  </main>
+
+  <!-- Storage Meter Footer -->
+  <footer style="padding: 16px 20px; border-top: 1px solid var(--panel-border); margin-top: auto; display: flex; flex-direction: column; align-items: center; gap: 8px;">
+    <div style="width: 100%; max-width: 400px; display: flex; flex-direction: column; gap: 6px;">
+      <div class="storage-bar-bg">
+        <div id="storage-bar-fill" class="storage-bar-fill"></div>
+      </div>
+      <div id="storage-text" style="font-size: 0.8rem; color: var(--text-secondary); text-align: center;">Loading storage usage...</div>
+    </div>
+  </footer>
+
+  <!-- File Drop Overlay -->
+  <div id="drop-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:9999; justify-content:center; align-items:center; flex-direction:column; border: 2px dashed var(--accent-color); pointer-events: none;">
+    <span style="font-size:3rem; margin-bottom:12px;">📤</span>
+    <h2 style="font-weight: 500;">Drop files here to upload</h2>
+  </div>
+
+  <!-- Modal: Media Preview overlay -->
+  <div id="preview-modal" class="modal-overlay">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 id="modal-title" class="modal-title">File Preview</h3>
+        <button class="modal-close">&times;</button>
+      </div>
+      <div id="modal-body" class="modal-body">
+        <!-- Rendered based on file type -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Generic Action forms (create folder, rename, confirm delete) -->
+  <div id="action-modal" class="modal-overlay">
+    <div class="modal-content" style="max-width: 400px;">
+      <div class="modal-header">
+        <h3 id="action-modal-title" class="modal-title">Action</h3>
+        <button class="modal-close">&times;</button>
+      </div>
+      <div id="action-modal-body" class="modal-body" style="align-items: stretch; justify-content: flex-start;">
+        <!-- Dynamic form content -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Floating Toast Notifications -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
