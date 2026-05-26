@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Cloud Drive</title>
+  <title>Media Server</title>
   <link rel="stylesheet" href="/static/css/style.css">
-  <link rel="icon" type="image/png" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2002/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🛡️</text></svg>">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <meta name="csrf-token" content="{{ csrf_token }}">
 </head>
 <body>
@@ -13,11 +13,11 @@
   <!-- Header Bar -->
   <header class="app-header glass">
     <div class="logo-section">
-      <span style="font-size: 1.3rem;">🛡️</span>
-      <a href="#" class="logo-text">Media Cloud</a>
+      <span class="logo-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></span>
+      <a href="#" class="logo-text">Media Server</a>
     </div>
     <div class="user-info">
-      <a href="/logout" class="btn btn-secondary btn-sm" style="padding: 6px 12px; font-size: 0.85rem;">Logout</a>
+      <a href="/logout" class="btn btn-secondary btn-logout">Logout</a>
     </div>
   </header>
 
@@ -33,13 +33,13 @@
       <div class="controls">
         <!-- Search bar -->
         <div class="search-wrapper">
-          <span class="search-icon">🔍</span>
+          <span class="search-icon"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></span>
           <input id="search-input" class="form-control search-input" type="text" placeholder="Search..." autocomplete="off">
         </div>
         
         <!-- Action Buttons -->
-        <button id="upload-btn" class="btn btn-primary">📤 Upload</button>
-        <button id="create-folder-btn" class="btn btn-secondary">📁 New Folder</button>
+        <button id="upload-btn" class="btn btn-primary"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Upload</button>
+        <button id="create-folder-btn" class="btn btn-secondary"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg> New Folder</button>
         <input type="file" id="upload-input" style="display: none;">
         
         <!-- Sorting -->
@@ -52,8 +52,8 @@
         
         <!-- View Toggle -->
         <div class="view-toggle">
-          <button id="view-grid-btn" class="view-btn active" title="Grid View">🎛️</button>
-          <button id="view-list-btn" class="view-btn" title="List View">☰</button>
+          <button id="view-grid-btn" class="view-btn active" title="Grid View"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg></button>
+          <button id="view-list-btn" class="view-btn" title="List View"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg></button>
         </div>
       </div>
     </div>
@@ -75,19 +75,19 @@
   </main>
 
   <!-- Storage Meter Footer -->
-  <footer style="padding: 16px 20px; border-top: 1px solid var(--panel-border); margin-top: auto; display: flex; flex-direction: column; align-items: center; gap: 8px;">
-    <div style="width: 100%; max-width: 400px; display: flex; flex-direction: column; gap: 6px;">
+  <footer class="app-footer">
+    <div class="storage-bar-wrap">
       <div class="storage-bar-bg">
         <div id="storage-bar-fill" class="storage-bar-fill"></div>
       </div>
-      <div id="storage-text" style="font-size: 0.8rem; color: var(--text-secondary); text-align: center;">Loading storage usage...</div>
+      <div id="storage-text" class="storage-text">Loading storage usage...</div>
     </div>
   </footer>
 
   <!-- File Drop Overlay -->
-  <div id="drop-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); z-index:9999; justify-content:center; align-items:center; flex-direction:column; border: 2px dashed var(--accent-color); pointer-events: none;">
-    <span style="font-size:3rem; margin-bottom:12px;">📤</span>
-    <h2 style="font-weight: 500;">Drop files here to upload</h2>
+  <div id="drop-overlay" class="drop-overlay">
+    <span class="drop-overlay-icon"><svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></span>
+    <h2 class="drop-overlay-text">Drop files here to upload</h2>
   </div>
 
   <!-- Modal: Media Preview overlay -->
@@ -105,12 +105,12 @@
 
   <!-- Modal: Generic Action forms (create folder, rename, confirm delete) -->
   <div id="action-modal" class="modal-overlay">
-    <div class="modal-content" style="max-width: 400px;">
+    <div class="modal-content modal-content-narrow">
       <div class="modal-header">
         <h3 id="action-modal-title" class="modal-title">Action</h3>
         <button class="modal-close">&times;</button>
       </div>
-      <div id="action-modal-body" class="modal-body" style="align-items: stretch; justify-content: flex-start;">
+      <div id="action-modal-body" class="modal-body">
         <!-- Dynamic form content -->
       </div>
     </div>

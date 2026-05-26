@@ -8,6 +8,9 @@ import secrets
 import logging
 from dotenv import load_dotenv
 from werkzeug.security import generate_password_hash, check_password_hash
+from hotspot_keeper import start_hotspot_keeper
+
+
 
 load_dotenv()
 
@@ -457,7 +460,7 @@ if __name__ == "__main__":
     print(f"Username:       {USERNAME}")
     print(f"SSL/HTTPS Mode: {SSL_MODE.upper()}")
     print("=" * 60)
-
+    start_hotspot_keeper()
     run_args = {
         "host": HOST,
         "port": PORT,
