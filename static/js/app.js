@@ -273,8 +273,8 @@ function sortAndRenderFiles() {
     let valB = b[sortKey];
 
     if (typeof valA === 'string') {
-      valA = valA.toLowerCase();
-      valB = valB.toLowerCase();
+      const result = valA.localeCompare(valB, undefined, { numeric: true, sensitivity: 'base' });
+      return sortOrder === 'asc' ? result : -result;
     }
 
     if (valA < valB) return sortOrder === 'asc' ? -1 : 1;

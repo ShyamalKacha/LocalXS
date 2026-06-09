@@ -70,6 +70,10 @@ body {
   font-weight: 700;
   margin-bottom: 4px;
   letter-spacing: -0.3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
 }
 
 .auth-subtitle {

@@ -8,7 +8,7 @@ import secrets
 import logging
 from dotenv import load_dotenv
 from werkzeug.security import generate_password_hash, check_password_hash
-from hotspot_keeper import start_hotspot_keeper
+from hotspot_keeper import start_hotspot_keeper, ensure_hotspot_on, wait_for_host_ip
 
 
 
@@ -22,7 +22,7 @@ DEFAULT_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 DEFAULT_PASSWORD = os.getenv("ADMIN_PASSWORD", "1234")
 
 # Set up CLI parser
-parser = argparse.ArgumentParser(description="Secure HTTPS File Sharing & Media Streaming Server")
+parser = argparse.ArgumentParser(description="LocalXS - Local Cross-Platform Sharing Server")
 parser.add_argument("--dir", default=DEFAULT_BASE_DIR, help="Base directory for files")
 parser.add_argument("--host", default=DEFAULT_HOST, help="Server host")
 parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Server port")
@@ -453,7 +453,7 @@ def add_security_headers(resp):
 # -------- RUN SERVER --------
 if __name__ == "__main__":
     print("=" * 60)
-    print(f"Starting Secure Media Sharing Server")
+    print(f"Starting LocalXS Server")
     print(f"Base Directory: {BASE_DIR}")
     print(f"Host:           {HOST}")
     print(f"Port:           {PORT}")
@@ -461,6 +461,14 @@ if __name__ == "__main__":
     print(f"SSL/HTTPS Mode: {SSL_MODE.upper()}")
     print("=" * 60)
     start_hotspot_keeper()
+    if not ensure_hotspot_on(timeout=30):
+        print("ERROR: Could not turn on hotspot within 30s. Exiting.")
+        exit(1)
+
+    if not wait_for_host_ip(HOST, timeout=15):
+        print(f"ERROR: {HOST} not available after hotspot turned on. Exiting.")
+        exit(1)
+
     run_args = {
         "host": HOST,
         "port": PORT,
