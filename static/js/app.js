@@ -221,7 +221,7 @@ async function loadFiles(path = '') {
     updateStorageUI(data.stats);
   } catch (error) {
     showToast(`Error: ${error.message}`, 'error');
-    filesContainer.innerHTML = `<div class="empty-state"><div class="empty-icon">${ICON.alert}</div><p>${error.message}</p></div>`;
+    filesContainer.innerHTML = `<div class="empty-state"><div class="empty-icon">${ICON.alert}</div><p>${escapeHtml(error.message)}</p></div>`;
   }
 }
 
@@ -415,6 +415,19 @@ function showLoader() {
   `;
 }
 
+// Trigger file download via hidden iframe (bypasses Chrome SSL download block with self-signed certs)
+function triggerDownload(url) {
+  const frame = document.createElement('iframe');
+  frame.style.display = 'none';
+  frame.style.width = '0';
+  frame.style.height = '0';
+  frame.src = url;
+  document.body.appendChild(frame);
+  setTimeout(function () {
+    if (frame.parentNode) frame.parentNode.removeChild(frame);
+  }, 60000);
+}
+
 // Open File Previewer overlay modal
 function openFilePreview(path, type) {
   const filename = path.split('/').pop();
@@ -422,6 +435,7 @@ function openFilePreview(path, type) {
   modalBody.innerHTML = '';
   
   const streamUrl = `/api/stream/${encodeURIComponent(path)}`;
+  const downloadUrl = `/api/download/${encodeURIComponent(path)}`;
   
   if (type === 'video') {
     const video = document.createElement('video');
@@ -468,25 +482,30 @@ function openFilePreview(path, type) {
       });
   } 
   else {
-    modalBody.innerHTML = `
-      <div style="text-align: center; padding: 30px 10px;">
-        <div class="preview-file-icon">${ICON.file}</div>
-        <p style="margin-bottom: 20px; color: var(--text-secondary); font-size:0.9rem;">Preview not supported for this file.</p>
-        <a class="btn btn-primary" href="${streamUrl}" download="${escapeHtml(filename)}">
-          ${ICON.download} Download File
-        </a>
-      </div>
+    const container = document.createElement('div');
+    container.style.cssText = 'text-align: center; padding: 30px 10px;';
+    container.innerHTML = `
+      <div class="preview-file-icon">${ICON.file}</div>
+      <p style="margin-bottom: 20px; color: var(--text-secondary); font-size:0.9rem;">Preview not supported for this file.</p>
     `;
+    const dlButton = document.createElement('button');
+    dlButton.className = 'btn btn-primary';
+    dlButton.type = 'button';
+    dlButton.innerHTML = `${ICON.download} Download File`;
+    dlButton.addEventListener('click', function () { triggerDownload(downloadUrl); });
+    container.appendChild(dlButton);
+    modalBody.appendChild(container);
   }
   
   if (['video', 'audio', 'image', 'text'].includes(type)) {
     const dlBtn = document.createElement('div');
     dlBtn.className = 'download-section';
-    dlBtn.innerHTML = `
-      <a class="btn btn-secondary" href="${streamUrl}" download="${escapeHtml(filename)}">
-        ${ICON.download} Download File
-      </a>
-    `;
+    const dlButton = document.createElement('button');
+    dlButton.className = 'btn btn-secondary';
+    dlButton.type = 'button';
+    dlButton.innerHTML = `${ICON.download} Download File`;
+    dlButton.addEventListener('click', function () { triggerDownload(downloadUrl); });
+    dlBtn.appendChild(dlButton);
     modalBody.appendChild(dlBtn);
   }
   

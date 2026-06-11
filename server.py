@@ -1,8 +1,10 @@
+import mimetypes
 from flask import Flask, render_template, request, redirect, session, jsonify, send_from_directory, abort
 from functools import wraps
 import os
 import shutil
 import datetime
+from datetime import timedelta
 import argparse
 import secrets
 import logging
@@ -48,7 +50,8 @@ app.secret_key = os.urandom(24)
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Strict',
-    SESSION_COOKIE_SECURE=(SSL_MODE == 'adhoc')
+    SESSION_COOKIE_SECURE=(SSL_MODE == 'adhoc'),
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=8)
 )
 
 if SSL_MODE == 'adhoc':
@@ -198,6 +201,7 @@ def login():
         password = request.form.get("password")
         
         if username == USERNAME and check_password_hash(PASSWORD_HASH, password):
+            session.permanent = True
             session["logged_in"] = True
             session["username"] = username
             session['csrf_token'] = secrets.token_hex(32)  # rotate CSRF on login
@@ -208,12 +212,11 @@ def login():
             
     return render_template("login.html")
 
-@app.route("/logout", methods=["GET", "POST"])
+@app.route("/logout", methods=["POST"])
 def logout():
-    if request.method == "POST":
-        token = request.headers.get('X-CSRF-Token') or request.form.get('_csrf_token')
-        if not token or token != session.get('csrf_token'):
-            return jsonify({"error": "CSRF validation failed"}), 403
+    token = request.headers.get('X-CSRF-Token') or request.form.get('_csrf_token')
+    if not token or token != session.get('csrf_token'):
+        return jsonify({"error": "CSRF validation failed"}), 403
     audit_log("LOGOUT", "", request.remote_addr or "unknown")
     session.clear()
     return redirect("/login")
@@ -297,6 +300,27 @@ def api_stream_file(req_path):
         conditional=True
     )
 
+@app.route("/api/download/<path:req_path>", methods=["GET"])
+@login_required
+def api_download_file(req_path):
+    try:
+        abs_path = safe_join(BASE_DIR, req_path)
+    except PermissionError as pe:
+        return jsonify({"error": str(pe)}), 403
+
+    if not os.path.exists(abs_path):
+        return "File not found", 404
+
+    if os.path.isdir(abs_path):
+        return "Cannot download directory", 400
+
+    return send_from_directory(
+        os.path.dirname(abs_path),
+        os.path.basename(abs_path),
+        as_attachment=True,
+        download_name=os.path.basename(abs_path)
+    )
+
 @app.route("/api/upload", methods=["POST"])
 @login_required
 @csrf_required
@@ -320,7 +344,16 @@ def api_upload_file():
     filename = os.path.basename(file.filename)
     if not filename:
         return jsonify({"error": "Invalid filename"}), 400
-        
+
+    ext = os.path.splitext(filename)[1].lower()
+    blocked_exts = {'.html', '.htm', '.svg', '.js', '.mjs', '.wasm', '.xhtml', '.hta', '.jse', '.vbs', '.ps1', '.psm1', '.psd1', '.lnk', '.url'}
+    if ext in blocked_exts:
+        return jsonify({"error": f"File type '{ext}' is not allowed for security reasons"}), 400
+
+    guessed_type, _ = mimetypes.guess_type(filename)
+    if guessed_type and (guessed_type.startswith('text/html') or guessed_type == 'application/x-javascript'):
+        return jsonify({"error": "File type is not allowed for security reasons"}), 400
+
     dest_path = safe_join(target_dir, filename)
     
     try:
@@ -445,7 +478,9 @@ def add_security_headers(resp):
     )
     resp.headers['X-XSS-Protection'] = '0'
     resp.headers['Referrer-Policy'] = 'no-referrer'
-    resp.headers['Cache-Control'] = 'no-store'
+    resp.headers['Permissions-Policy'] = 'geolocation=(), microphone=(), camera=(), fullscreen=()'
+    if not request.path.startswith('/api/stream/') and not request.path.startswith('/api/download/'):
+        resp.headers['Cache-Control'] = 'no-store'
     if SSL_MODE == 'adhoc':
         resp.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
     return resp
