@@ -478,7 +478,7 @@ def add_security_headers(resp):
     )
     resp.headers['X-XSS-Protection'] = '0'
     resp.headers['Referrer-Policy'] = 'no-referrer'
-    resp.headers['Permissions-Policy'] = 'geolocation=(), microphone=(), camera=(), fullscreen=()'
+    resp.headers['Permissions-Policy'] = 'geolocation=(), microphone=(), camera=()'
     if not request.path.startswith('/api/stream/') and not request.path.startswith('/api/download/'):
         resp.headers['Cache-Control'] = 'no-store'
     if SSL_MODE == 'adhoc':
