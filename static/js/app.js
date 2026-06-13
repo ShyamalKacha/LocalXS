@@ -415,17 +415,9 @@ function showLoader() {
   `;
 }
 
-// Trigger file download via hidden iframe (bypasses Chrome SSL download block with self-signed certs)
+// Trigger file download by opening in new tab (user gesture bypasses popup blockers)
 function triggerDownload(url) {
-  const frame = document.createElement('iframe');
-  frame.style.display = 'none';
-  frame.style.width = '0';
-  frame.style.height = '0';
-  frame.src = url;
-  document.body.appendChild(frame);
-  setTimeout(function () {
-    if (frame.parentNode) frame.parentNode.removeChild(frame);
-  }, 60000);
+  window.open(url, '_blank');
 }
 
 // Open File Previewer overlay modal
