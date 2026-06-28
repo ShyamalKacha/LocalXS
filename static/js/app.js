@@ -461,6 +461,25 @@ function openFilePreview(path, type, hasSidecar) {
     video.controls = true;
     video.autoplay = true;
 
+    // Override arrow-key seek to 5 seconds (browsers default to ~1 min on Up/Down)
+    video.addEventListener('keydown', (e) => {
+      if (!video.controls) return;
+      const SEEK_STEP = 5;
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        video.currentTime = Math.min(video.currentTime + SEEK_STEP, video.duration || 0);
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        video.currentTime = Math.max(video.currentTime - SEEK_STEP, 0);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        video.currentTime = Math.min(video.currentTime + SEEK_STEP, video.duration || 0);
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        video.currentTime = Math.max(video.currentTime - SEEK_STEP, 0);
+      }
+    });
+
     const container = document.createElement('div');
     container.className = 'media-container';
     container.appendChild(video);
@@ -500,7 +519,10 @@ function openFilePreview(path, type, hasSidecar) {
         const syncSeeked = () => {
           if (sidecarAudio.src && !sidecarAudio.src.endsWith('/')) {
             sidecarAudio.currentTime = video.currentTime;
-            sidecarAudio.play().catch(() => {});
+            // Only resume audio if the video is actually playing
+            if (!video.paused) {
+              sidecarAudio.play().catch(() => {});
+            }
           }
           isSyncing = false;
         };
