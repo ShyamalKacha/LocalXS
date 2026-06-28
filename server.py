@@ -1,4 +1,6 @@
 import mimetypes
+import subprocess
+import json
 from flask import Flask, render_template, request, redirect, session, jsonify, send_from_directory, abort
 from functools import wraps
 import os
@@ -249,6 +251,13 @@ def api_list_files():
             mtime = stat.st_mtime
             mtime_str = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
             
+            file_type = "folder" if is_dir else get_file_type(name)
+
+            # Check for sidecar audio file (browser-incompatible audio codec workaround)
+            has_sidecar = False
+            if not is_dir and file_type == 'video':
+                has_sidecar = os.path.exists(full_path + ".audio.m4a")
+
             items.append({
                 "name": name,
                 "is_dir": is_dir,
@@ -256,7 +265,8 @@ def api_list_files():
                 "size_str": get_size_str(size) if not is_dir else "",
                 "mtime": mtime,
                 "mtime_str": mtime_str,
-                "type": "folder" if is_dir else get_file_type(name)
+                "type": file_type,
+                "has_sidecar": has_sidecar
             })
     except Exception:
         return jsonify({"error": "Failed to list directory contents"}), 500
@@ -299,6 +309,78 @@ def api_stream_file(req_path):
         os.path.basename(abs_path),
         conditional=True
     )
+
+# Supported audio codecs browsers can natively decode inside <video>
+_SUPPORTED_AUDIO_CODECS = {'aac', 'mp3', 'opus', 'vorbis', 'flac'}
+
+def _get_ffprobe_streams(abs_path):
+    """Return parsed streams from ffprobe, or None on error."""
+    try:
+        result = subprocess.run(
+            ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_streams', abs_path],
+            capture_output=True, text=True, check=True, timeout=30
+        )
+        return json.loads(result.stdout)
+    except Exception:
+        return None
+
+def _needs_sidecar(abs_path):
+    """Return True if the video has an audio stream with an unsupported codec."""
+    info = _get_ffprobe_streams(abs_path)
+    if not info:
+        return False
+    audio_streams = [s for s in info.get('streams', []) if s.get('codec_type') == 'audio']
+    if not audio_streams:
+        return False
+    return any(a.get('codec_name') not in _SUPPORTED_AUDIO_CODECS for a in audio_streams)
+
+@app.route("/api/extract_sidecar/<path:req_path>", methods=["POST"])
+@login_required
+def api_extract_sidecar(req_path):
+    """
+    On-demand sidecar audio extraction.
+    Probes the video, and if it contains unsupported audio, extracts the first
+    audio track as a high-quality AAC file alongside the original.
+    Returns { "extracted": true/false, "sidecar_path": "..." }
+    """
+    try:
+        abs_path = safe_join(BASE_DIR, req_path)
+    except PermissionError as pe:
+        return jsonify({"error": str(pe)}), 403
+
+    if not os.path.exists(abs_path):
+        return jsonify({"error": "File not found"}), 404
+    if os.path.isdir(abs_path):
+        return jsonify({"error": "Not a file"}), 400
+
+    sidecar_path = abs_path + ".audio.m4a"
+    if os.path.exists(sidecar_path):
+        return jsonify({"extracted": True, "sidecar_path": req_path + ".audio.m4a"})
+
+    if not _needs_sidecar(abs_path):
+        return jsonify({"extracted": False, "reason": "audio codec already supported"})
+
+    try:
+        subprocess.run(
+            ['ffmpeg', '-i', abs_path,
+             '-map', '0:a:0',
+             '-c:a', 'aac',
+             '-b:a', '320k',
+             '-y', sidecar_path],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True, timeout=600
+        )
+        audit_log("EXTRACT_SIDECAR", mask_path(sidecar_path), request.remote_addr or "unknown")
+        return jsonify({"extracted": True, "sidecar_path": req_path + ".audio.m4a"})
+    except subprocess.TimeoutExpired:
+        if os.path.exists(sidecar_path):
+            os.remove(sidecar_path)
+        return jsonify({"error": "Extraction timed out"}), 504
+    except subprocess.CalledProcessError:
+        if os.path.exists(sidecar_path):
+            os.remove(sidecar_path)
+        return jsonify({"error": "Extraction failed"}), 500
 
 @app.route("/api/download/<path:req_path>", methods=["GET"])
 @login_required

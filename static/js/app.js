@@ -122,7 +122,7 @@ function setupEventListeners() {
     }
 
     if (card) {
-      handleItemClick(decodeURIComponent(card.dataset.path), card.dataset.isdir === 'true', card.dataset.type);
+      handleItemClick(decodeURIComponent(card.dataset.path), card.dataset.isdir === 'true', card.dataset.type, card.dataset.hasSidecar === 'true');
     }
   });
 
@@ -316,7 +316,7 @@ function renderGrid(items) {
     const pathArg = currentPath ? `${currentPath}/${item.name}` : item.name;
     
     html += `
-      <div class="file-card" data-path="${encodeURIComponent(pathArg)}" data-isdir="${item.is_dir}" data-type="${item.type}">
+      <div class="file-card" data-path="${encodeURIComponent(pathArg)}" data-isdir="${item.is_dir}" data-type="${item.type}" data-has-sidecar="${item.has_sidecar ? 'true' : 'false'}">
         <div class="file-actions">
           <button class="action-btn" data-action="rename" data-path="${encodeURIComponent(pathArg)}" data-name="${encodeURIComponent(item.name)}" title="Rename">${ICON.edit}</button>
           <button class="action-btn delete-btn" data-action="delete" data-path="${encodeURIComponent(pathArg)}" data-name="${encodeURIComponent(item.name)}" data-isdir="${item.is_dir}" title="Delete">${ICON.trash}</button>
@@ -341,7 +341,7 @@ function renderList(items) {
     const pathArg = currentPath ? `${currentPath}/${item.name}` : item.name;
     
     html += `
-      <div class="file-row" data-path="${encodeURIComponent(pathArg)}" data-isdir="${item.is_dir}" data-type="${item.type}">
+      <div class="file-row" data-path="${encodeURIComponent(pathArg)}" data-isdir="${item.is_dir}" data-type="${item.type}" data-has-sidecar="${item.has_sidecar ? 'true' : 'false'}">
         <div class="file-row-icon">${icon}</div>
         <div class="file-row-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</div>
         <div class="file-row-meta">${item.is_dir ? 'Folder' : item.size_str}</div>
@@ -397,11 +397,11 @@ function updateStorageUI(stats) {
 }
 
 // Handle File/Directory Click
-function handleItemClick(path, isDir, fileType) {
+function handleItemClick(path, isDir, fileType, hasSidecar) {
   if (isDir) {
     window.location.hash = `#/${path}`;
   } else {
-    openFilePreview(path, fileType);
+    openFilePreview(path, fileType, hasSidecar);
   }
 }
 
@@ -420,27 +420,128 @@ function triggerDownload(url) {
   window.open(url, '_blank');
 }
 
+// Probe video for unsupported audio and trigger sidecar extraction if needed.
+// Runs silently in the background — the user can refresh the player when extraction completes.
+async function probeAndExtractSidecar(path) {
+  try {
+    const response = await fetch(
+      `/api/extract_sidecar/${encodeURIComponent(path)}`,
+      { method: 'POST' }
+    );
+    const data = await response.json();
+    if (data.extracted) {
+      showToast('Audio extracted! Re-open the video to play with sound.', 'success');
+    }
+  } catch (e) {
+    // Silent — video plays without audio, which is the current behaviour
+  }
+}
+
 // Open File Previewer overlay modal
-function openFilePreview(path, type) {
+function openFilePreview(path, type, hasSidecar) {
   const filename = path.split('/').pop();
   modalTitle.textContent = filename;
   modalBody.innerHTML = '';
-  
+
   const streamUrl = `/api/stream/${encodeURIComponent(path)}`;
   const downloadUrl = `/api/download/${encodeURIComponent(path)}`;
-  
+
   if (type === 'video') {
+    // Clear any previous sidecar audio
+    const sidecarAudio = document.getElementById('sidecarAudio');
+    if (sidecarAudio) {
+      sidecarAudio.pause();
+      sidecarAudio.src = '';
+      sidecarAudio.removeAttribute('src');
+    }
+
     const video = document.createElement('video');
     video.src = streamUrl;
     video.className = 'modal-player';
     video.controls = true;
     video.autoplay = true;
-    
+
     const container = document.createElement('div');
     container.className = 'media-container';
     container.appendChild(video);
     modalBody.appendChild(container);
-  } 
+
+    if (hasSidecar) {
+      // Sidecar audio approach: mute the video, play the sidecar through hidden <audio>
+      const sidecarUrl = streamUrl + ".audio.m4a";
+      video.muted = true;
+
+      if (sidecarAudio) {
+        // Add a small "info" badge so the user knows why the video is muted
+        const infoBadge = document.createElement('div');
+        infoBadge.className = 'sidecar-info';
+        infoBadge.textContent = '🔊 Audio: high-quality sidecar';
+        infoBadge.style.cssText = 'text-align:center;font-size:0.75rem;color:var(--text-secondary);padding:4px 0;';
+        container.appendChild(infoBadge);
+
+        // Reset + load sidecar audio
+        sidecarAudio.src = sidecarUrl;
+        sidecarAudio.load();
+
+        // ---- Sync event listeners ----
+        let isSyncing = false;
+
+        const syncPlay = () => {
+          if (sidecarAudio.src && !sidecarAudio.src.endsWith('/')) {
+            sidecarAudio.currentTime = video.currentTime;
+            sidecarAudio.play().catch(() => {});
+          }
+        };
+        const syncPause = () => sidecarAudio.pause();
+        const syncSeeking = () => {
+          isSyncing = true;
+          sidecarAudio.pause();
+        };
+        const syncSeeked = () => {
+          if (sidecarAudio.src && !sidecarAudio.src.endsWith('/')) {
+            sidecarAudio.currentTime = video.currentTime;
+            sidecarAudio.play().catch(() => {});
+          }
+          isSyncing = false;
+        };
+        const syncWaiting = () => sidecarAudio.pause();
+        const syncPlaying = () => {
+          if (sidecarAudio.src && !sidecarAudio.src.endsWith('/') && !video.paused) {
+            sidecarAudio.currentTime = video.currentTime;
+            sidecarAudio.play().catch(() => {});
+          }
+        };
+        // Fallback: correct micro-drifts > 0.3s
+        const syncTimeupdate = () => {
+          if (sidecarAudio.src && !sidecarAudio.src.endsWith('/') && !isSyncing && !video.paused) {
+            const diff = Math.abs(video.currentTime - sidecarAudio.currentTime);
+            if (diff > 0.3) {
+              sidecarAudio.currentTime = video.currentTime;
+            }
+          }
+        };
+
+        // Store handlers on the video element so we can remove them later
+        video._sidecarHandlers = { syncPlay, syncPause, syncSeeking, syncSeeked, syncWaiting, syncPlaying, syncTimeupdate };
+
+        video.addEventListener('play', syncPlay);
+        video.addEventListener('pause', syncPause);
+        video.addEventListener('seeking', syncSeeking);
+        video.addEventListener('seeked', syncSeeked);
+        video.addEventListener('waiting', syncWaiting);
+        video.addEventListener('playing', syncPlaying);
+        video.addEventListener('timeupdate', syncTimeupdate);
+
+        // Start playback
+        video.play().catch(() => {});
+      }
+    }
+
+    // Probe & auto-trigger extraction if no sidecar exists yet
+    if (!hasSidecar) {
+      probeAndExtractSidecar(path);
+    }
+  }
   else if (type === 'audio') {
     const audio = document.createElement('audio');
     audio.src = streamUrl;
@@ -448,7 +549,7 @@ function openFilePreview(path, type) {
     audio.controls = true;
     audio.autoplay = true;
     modalBody.appendChild(audio);
-  } 
+  }
   else if (type === 'image') {
     const img = document.createElement('img');
     img.src = streamUrl;
@@ -694,8 +795,29 @@ function closeAllModals() {
     player.pause();
     player.src = '';
     player.load();
+
+    // Remove sidecar sync handlers if any were attached
+    if (player._sidecarHandlers) {
+      var h = player._sidecarHandlers;
+      player.removeEventListener('play', h.syncPlay);
+      player.removeEventListener('pause', h.syncPause);
+      player.removeEventListener('seeking', h.syncSeeking);
+      player.removeEventListener('seeked', h.syncSeeked);
+      player.removeEventListener('waiting', h.syncWaiting);
+      player.removeEventListener('playing', h.syncPlaying);
+      player.removeEventListener('timeupdate', h.syncTimeupdate);
+      delete player._sidecarHandlers;
+    }
   });
-  
+
+  // Clear sidecar audio element
+  var sidecarAudio = document.getElementById('sidecarAudio');
+  if (sidecarAudio) {
+    sidecarAudio.pause();
+    sidecarAudio.src = '';
+    sidecarAudio.removeAttribute('src');
+  }
+
   previewModal.classList.remove('active');
   actionModal.classList.remove('active');
 }

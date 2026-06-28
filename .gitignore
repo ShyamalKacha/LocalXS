@@ -12,3 +12,4 @@ dist/
 shared/
 .opencode/
 shared/
+.qwen/
