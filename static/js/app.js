@@ -122,7 +122,7 @@ function setupEventListeners() {
     }
 
     if (card) {
-      handleItemClick(decodeURIComponent(card.dataset.path), card.dataset.isdir === 'true', card.dataset.type, card.dataset.hasSidecar === 'true');
+      handleItemClick(decodeURIComponent(card.dataset.path), card.dataset.isdir === 'true', card.dataset.type);
     }
   });
 
@@ -397,11 +397,11 @@ function updateStorageUI(stats) {
 }
 
 // Handle File/Directory Click
-function handleItemClick(path, isDir, fileType, hasSidecar) {
+function handleItemClick(path, isDir, fileType) {
   if (isDir) {
     window.location.hash = `#/${path}`;
   } else {
-    openFilePreview(path, fileType, hasSidecar);
+    openFilePreview(path, fileType);
   }
 }
 
@@ -420,25 +420,130 @@ function triggerDownload(url) {
   window.open(url, '_blank');
 }
 
-// Probe video for unsupported audio and trigger sidecar extraction if needed.
-// Runs silently in the background — the user can refresh the player when extraction completes.
-async function probeAndExtractSidecar(path) {
+// ---- Sidecar / Track helper functions ----
+
+// Fetch audio track list from the API
+async function fetchAudioTracks(path) {
+  var response = await fetch('/api/audio_tracks/' + encodeURIComponent(path));
+  if (!response.ok) throw new Error('Failed to fetch audio tracks');
+  var data = await response.json();
+  return data.tracks || [];
+}
+
+// Remove sidecar sync event handlers from a video element
+function removeSidecarHandlers(video) {
+  if (video._sidecarHandlers) {
+    var h = video._sidecarHandlers;
+    video.removeEventListener('play', h.syncPlay);
+    video.removeEventListener('pause', h.syncPause);
+    video.removeEventListener('seeking', h.syncSeeking);
+    video.removeEventListener('seeked', h.syncSeeked);
+    video.removeEventListener('waiting', h.syncWaiting);
+    video.removeEventListener('playing', h.syncPlaying);
+    video.removeEventListener('timeupdate', h.syncTimeupdate);
+    delete video._sidecarHandlers;
+  }
+}
+
+// Attach sync event listeners: video muted → hidden <audio> plays in lockstep
+function setupSidecarSync(video, sidecarAudio, sidecarUrl) {
+  removeSidecarHandlers(video);
+
+  sidecarAudio.src = sidecarUrl;
+  sidecarAudio.load();
+
+  var isSyncing = false;
+
+  var syncPlay = function() {
+    if (sidecarAudio.src && !sidecarAudio.src.endsWith('/')) {
+      sidecarAudio.currentTime = video.currentTime;
+      sidecarAudio.play().catch(function() {});
+    }
+  };
+  var syncPause = function() { sidecarAudio.pause(); };
+  var syncSeeking = function() {
+    isSyncing = true;
+    sidecarAudio.pause();
+  };
+  var syncSeeked = function() {
+    if (sidecarAudio.src && !sidecarAudio.src.endsWith('/')) {
+      sidecarAudio.currentTime = video.currentTime;
+      if (!video.paused) {
+        sidecarAudio.play().catch(function() {});
+      }
+    }
+    isSyncing = false;
+  };
+  var syncWaiting = function() { sidecarAudio.pause(); };
+  var syncPlaying = function() {
+    if (sidecarAudio.src && !sidecarAudio.src.endsWith('/') && !video.paused) {
+      sidecarAudio.currentTime = video.currentTime;
+      sidecarAudio.play().catch(function() {});
+    }
+  };
+  var syncTimeupdate = function() {
+    if (sidecarAudio.src && !sidecarAudio.src.endsWith('/') && !isSyncing && !video.paused) {
+      var diff = Math.abs(video.currentTime - sidecarAudio.currentTime);
+      if (diff > 0.3) {
+        sidecarAudio.currentTime = video.currentTime;
+      }
+    }
+  };
+
+  video._sidecarHandlers = { syncPlay: syncPlay, syncPause: syncPause, syncSeeking: syncSeeking, syncSeeked: syncSeeked, syncWaiting: syncWaiting, syncPlaying: syncPlaying, syncTimeupdate: syncTimeupdate };
+
+  video.addEventListener('play', syncPlay);
+  video.addEventListener('pause', syncPause);
+  video.addEventListener('seeking', syncSeeking);
+  video.addEventListener('seeked', syncSeeked);
+  video.addEventListener('waiting', syncWaiting);
+  video.addEventListener('playing', syncPlaying);
+  video.addEventListener('timeupdate', syncTimeupdate);
+
+  video.play().catch(function() {});
+}
+
+// Trigger on-demand extraction for a track and apply sidecar when done
+async function extractAndApplyTrack(path, trackIndex, streamUrl, video, sidecarAudio, statusBar, progWrap) {
   try {
-    const response = await fetch(
-      `/api/extract_sidecar/${encodeURIComponent(path)}`,
-      { method: 'POST' }
-    );
-    const data = await response.json();
+    var response = await fetch('/api/extract_sidecar/' + encodeURIComponent(path), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ track_index: trackIndex })
+    });
+    var data = await response.json();
+    var iconEl = statusBar.querySelector('.status-icon');
+    var textEl = statusBar.querySelector('.status-text');
     if (data.extracted) {
-      showToast('Audio extracted! Re-open the video to play with sound.', 'success');
+      if (progWrap && progWrap.parentNode) progWrap.parentNode.removeChild(progWrap);
+      iconEl.innerHTML = '\uD83D\uDD0A';
+      textEl.textContent = 'Track ' + (trackIndex + 1) + ': high-quality sidecar';
+      statusBar.className = 'player-status done';
+      var suffix = trackIndex === 0 ? '.audio.m4a' : '.audio.' + trackIndex + '.m4a';
+      video.src = streamUrl;
+      setupSidecarSync(video, sidecarAudio, streamUrl + suffix);
+    } else {
+      if (progWrap && progWrap.parentNode) progWrap.parentNode.removeChild(progWrap);
+      iconEl.innerHTML = '\u26A0\uFE0F';
+      textEl.textContent = 'Audio conversion skipped ' + (data.reason || '');
+      statusBar.className = 'player-status error';
+      video.src = streamUrl;
+      video.play().catch(function() {});
     }
   } catch (e) {
-    // Silent — video plays without audio, which is the current behaviour
+    if (progWrap && progWrap.parentNode) progWrap.parentNode.removeChild(progWrap);
+    var iconEl = statusBar.querySelector('.status-icon');
+    var textEl = statusBar.querySelector('.status-text');
+    if (iconEl) iconEl.innerHTML = '\u26A0\uFE0F';
+    if (textEl) textEl.textContent = 'Audio extraction failed';
+    statusBar.className = 'player-status error';
+    video.src = streamUrl;
+    video.play().catch(function() {});
   }
 }
 
 // Open File Previewer overlay modal
-function openFilePreview(path, type, hasSidecar) {
+function openFilePreview(path, type) {
   const filename = path.split('/').pop();
   modalTitle.textContent = filename;
   modalBody.innerHTML = '';
@@ -455,114 +560,213 @@ function openFilePreview(path, type, hasSidecar) {
       sidecarAudio.removeAttribute('src');
     }
 
-    const video = document.createElement('video');
-    video.src = streamUrl;
-    video.className = 'modal-player';
-    video.controls = true;
-    video.autoplay = true;
-
-    // Override arrow-key seek to 5 seconds (browsers default to ~1 min on Up/Down)
-    video.addEventListener('keydown', (e) => {
-      if (!video.controls) return;
-      const SEEK_STEP = 5;
-      if (e.key === 'ArrowRight') {
-        e.preventDefault();
-        video.currentTime = Math.min(video.currentTime + SEEK_STEP, video.duration || 0);
-      } else if (e.key === 'ArrowLeft') {
-        e.preventDefault();
-        video.currentTime = Math.max(video.currentTime - SEEK_STEP, 0);
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        video.currentTime = Math.min(video.currentTime + SEEK_STEP, video.duration || 0);
-      } else if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        video.currentTime = Math.max(video.currentTime - SEEK_STEP, 0);
-      }
-    });
-
     const container = document.createElement('div');
     container.className = 'media-container';
-    container.appendChild(video);
     modalBody.appendChild(container);
 
-    if (hasSidecar) {
-      // Sidecar audio approach: mute the video, play the sidecar through hidden <audio>
-      const sidecarUrl = streamUrl + ".audio.m4a";
-      video.muted = true;
+    // ---- Loading state ----
+    container.innerHTML =
+      '<div class="track-loading">' +
+        '<div class="spinner-dots"><span></span><span></span><span></span></div>' +
+        '<div class="track-load-label">Probing audio tracks\u2026</div>' +
+      '</div>';
 
-      if (sidecarAudio) {
-        // Add a small "info" badge so the user knows why the video is muted
-        const infoBadge = document.createElement('div');
-        infoBadge.className = 'sidecar-info';
-        infoBadge.textContent = '🔊 Audio: high-quality sidecar';
-        infoBadge.style.cssText = 'text-align:center;font-size:0.75rem;color:var(--text-secondary);padding:4px 0;';
-        container.appendChild(infoBadge);
+    fetchAudioTracks(path).then(function(tracks) {
+      container.innerHTML = '';
 
-        // Reset + load sidecar audio
-        sidecarAudio.src = sidecarUrl;
-        sidecarAudio.load();
-
-        // ---- Sync event listeners ----
-        let isSyncing = false;
-
-        const syncPlay = () => {
-          if (sidecarAudio.src && !sidecarAudio.src.endsWith('/')) {
-            sidecarAudio.currentTime = video.currentTime;
-            sidecarAudio.play().catch(() => {});
-          }
-        };
-        const syncPause = () => sidecarAudio.pause();
-        const syncSeeking = () => {
-          isSyncing = true;
-          sidecarAudio.pause();
-        };
-        const syncSeeked = () => {
-          if (sidecarAudio.src && !sidecarAudio.src.endsWith('/')) {
-            sidecarAudio.currentTime = video.currentTime;
-            // Only resume audio if the video is actually playing
-            if (!video.paused) {
-              sidecarAudio.play().catch(() => {});
-            }
-          }
-          isSyncing = false;
-        };
-        const syncWaiting = () => sidecarAudio.pause();
-        const syncPlaying = () => {
-          if (sidecarAudio.src && !sidecarAudio.src.endsWith('/') && !video.paused) {
-            sidecarAudio.currentTime = video.currentTime;
-            sidecarAudio.play().catch(() => {});
-          }
-        };
-        // Fallback: correct micro-drifts > 0.3s
-        const syncTimeupdate = () => {
-          if (sidecarAudio.src && !sidecarAudio.src.endsWith('/') && !isSyncing && !video.paused) {
-            const diff = Math.abs(video.currentTime - sidecarAudio.currentTime);
-            if (diff > 0.3) {
-              sidecarAudio.currentTime = video.currentTime;
-            }
-          }
-        };
-
-        // Store handlers on the video element so we can remove them later
-        video._sidecarHandlers = { syncPlay, syncPause, syncSeeking, syncSeeked, syncWaiting, syncPlaying, syncTimeupdate };
-
-        video.addEventListener('play', syncPlay);
-        video.addEventListener('pause', syncPause);
-        video.addEventListener('seeking', syncSeeking);
-        video.addEventListener('seeked', syncSeeked);
-        video.addEventListener('waiting', syncWaiting);
-        video.addEventListener('playing', syncPlaying);
-        video.addEventListener('timeupdate', syncTimeupdate);
-
-        // Start playback
-        video.play().catch(() => {});
+      if (tracks.length === 0) {
+        // No audio — plain player
+        var fallbackVideo = document.createElement('video');
+        fallbackVideo.src = streamUrl;
+        fallbackVideo.className = 'modal-player';
+        fallbackVideo.controls = true;
+        fallbackVideo.autoplay = true;
+        fallbackVideo.addEventListener('keydown', function(e) {
+          if (!fallbackVideo.controls) return;
+          var S = 5;
+          if (e.key === 'ArrowRight' || e.key === 'ArrowUp') { e.preventDefault(); fallbackVideo.currentTime = Math.min(fallbackVideo.currentTime + S, fallbackVideo.duration || 0); }
+          else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') { e.preventDefault(); fallbackVideo.currentTime = Math.max(fallbackVideo.currentTime - S, 0); }
+        });
+        container.appendChild(fallbackVideo);
+        return;
       }
-    }
 
-    // Probe & auto-trigger extraction if no sidecar exists yet
-    if (!hasSidecar) {
-      probeAndExtractSidecar(path);
-    }
+      var singleTrack = tracks.length === 1;
+      var defaultTrack = singleTrack ? tracks[0] : (tracks.find(function(t) { return t.has_sidecar; }) || tracks[0]);
+
+      // ===== Phase 1: Track Picker =====
+
+      var picker = document.createElement('div');
+      picker.className = 'track-picker';
+
+      // Icon
+      var iconEl = document.createElement('div');
+      iconEl.className = 'track-picker-icon';
+      iconEl.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>';
+      picker.appendChild(iconEl);
+
+      // Filename
+      var fileName = decodeURIComponent((path || '').split('/').pop() || 'Video');
+      var nameEl = document.createElement('div');
+      nameEl.className = 'track-picker-filename';
+      nameEl.textContent = fileName;
+      nameEl.title = fileName;
+      picker.appendChild(nameEl);
+
+      // Subtitle
+      var subtitleEl = document.createElement('div');
+      subtitleEl.className = 'track-picker-subtitle';
+      subtitleEl.textContent = tracks.length + ' audio track' + (tracks.length > 1 ? 's' : '') + ' detected';
+      picker.appendChild(subtitleEl);
+
+      // Divider
+      var divider = document.createElement('div');
+      divider.className = 'track-picker-divider';
+      picker.appendChild(divider);
+
+      // Selector row
+      var rowEl = document.createElement('div');
+      rowEl.className = 'track-picker-row';
+
+      var labelEl = document.createElement('span');
+      labelEl.className = 'track-picker-label';
+      labelEl.textContent = 'Audio';
+      rowEl.appendChild(labelEl);
+
+      var selectEl = document.createElement('select');
+      selectEl.className = 'track-picker-select';
+      tracks.forEach(function(track) {
+        var opt = document.createElement('option');
+        opt.value = track.index;
+        var lang = (track.language || 'und').toUpperCase();
+        var ch = track.channels ? track.channels + 'ch' : '';
+        var flag = track.supported ? '\u2713' : (track.has_sidecar ? 'sidecar' : '');
+        var label = (track.index + 1) + '. ' + lang;
+        if (ch) label += ' \u00B7 ' + ch;
+        label += ' \u2014 ' + track.codec.toUpperCase();
+        if (flag) label += ' (' + flag + ')';
+        opt.textContent = label;
+        selectEl.appendChild(opt);
+      });
+      selectEl.value = defaultTrack.index;
+      rowEl.appendChild(selectEl);
+
+      // Pill for single-track status
+      if (singleTrack) {
+        var pillEl = document.createElement('span');
+        pillEl.className = 'track-picker-pill';
+        var dot = document.createElement('span');
+        dot.className = 'dot';
+        var t = tracks[0];
+        if (t.supported)       { dot.className += ' green'; pillEl.appendChild(dot); pillEl.appendChild(document.createTextNode(t.codec.toUpperCase() + ' \u2014 native')); }
+        else if (t.has_sidecar) { dot.className += ' blue';  pillEl.appendChild(dot); pillEl.appendChild(document.createTextNode(t.codec.toUpperCase() + ' \u2014 sidecar')); }
+        else                    { dot.className += ' amber'; pillEl.appendChild(dot); pillEl.appendChild(document.createTextNode(t.codec.toUpperCase() + ' \u2192 AAC')); }
+        rowEl.appendChild(pillEl);
+      }
+
+      // Play button
+      var playBtn = document.createElement('button');
+      playBtn.className = 'track-picker-play';
+      playBtn.textContent = '\u25B6 Play';
+      rowEl.appendChild(playBtn);
+
+      picker.appendChild(rowEl);
+
+      // Prompt (multi-track only)
+      if (!singleTrack) {
+        var promptEl = document.createElement('div');
+        promptEl.className = 'track-picker-prompt';
+        promptEl.textContent = 'Select an audio track and click Play';
+        picker.appendChild(promptEl);
+      }
+
+      container.appendChild(picker);
+
+      // ===== Phase 2: Playback =====
+
+      function startPlayback(trackIdx) {
+        var track = tracks.find(function(t) { return t.index === trackIdx; });
+        if (!track) return;
+
+        container.innerHTML = '';
+
+        var video = document.createElement('video');
+        video.className = 'modal-player';
+        video.controls = true;
+        video.autoplay = true;
+        video.addEventListener('keydown', function(e) {
+          if (!video.controls) return;
+          var S = 5;
+          if (e.key === 'ArrowRight' || e.key === 'ArrowUp') { e.preventDefault(); video.currentTime = Math.min(video.currentTime + S, video.duration || 0); }
+          else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') { e.preventDefault(); video.currentTime = Math.max(video.currentTime - S, 0); }
+        });
+        container.appendChild(video);
+
+        // Status bar
+        var statusBar = document.createElement('div');
+        statusBar.className = 'player-status';
+        var statusIcon = document.createElement('span');
+        statusIcon.className = 'status-icon';
+        var statusText = document.createElement('span');
+        statusText.className = 'status-text';
+        statusBar.appendChild(statusIcon);
+        statusBar.appendChild(statusText);
+        container.appendChild(statusBar);
+
+        if (track.supported) {
+          // Native playback
+          video.src = streamUrl;
+          video.muted = false;
+          statusBar.style.display = 'none';
+          video.play().catch(function() {});
+        } else if (track.has_sidecar) {
+          // Sidecar exists
+          video.src = streamUrl;
+          video.muted = true;
+          var sSuffix = track.index === 0 ? '.audio.m4a' : '.audio.' + track.index + '.m4a';
+          statusIcon.innerHTML = '\uD83D\uDD0A';
+          statusText.textContent = 'Track ' + (track.index + 1) + ' \u00B7 ' + (track.language || 'und').toUpperCase() + ' \u00B7 high-quality sidecar';
+          statusBar.className = 'player-status info';
+          setupSidecarSync(video, sidecarAudio, streamUrl + sSuffix);
+        } else {
+          // Need extraction
+          video.muted = true;
+          statusIcon.innerHTML = '\u2699\uFE0F';
+          statusText.textContent = 'Converting track ' + (track.index + 1) + ' (' + (track.language || 'und').toUpperCase() + ')\u2026';
+          statusBar.className = 'player-status working';
+
+          var progWrap = document.createElement('div');
+          progWrap.className = 'player-progress';
+          var progBar = document.createElement('div');
+          progBar.className = 'player-progress-bar indeterminate';
+          progWrap.appendChild(progBar);
+          container.insertBefore(progWrap, statusBar);
+
+          extractAndApplyTrack(path, track.index, streamUrl, video, sidecarAudio, statusBar, progWrap);
+        }
+      }
+
+      // Wire up
+      playBtn.addEventListener('click', function() { startPlayback(parseInt(selectEl.value)); });
+      selectEl.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') startPlayback(parseInt(selectEl.value));
+      });
+
+    }).catch(function(err) {
+      container.innerHTML = '';
+      var video = document.createElement('video');
+      video.src = streamUrl;
+      video.className = 'modal-player';
+      video.controls = true;
+      video.autoplay = true;
+      video.addEventListener('keydown', function(e) {
+        if (!video.controls) return;
+        var S = 5;
+        if (e.key === 'ArrowRight' || e.key === 'ArrowUp') { e.preventDefault(); video.currentTime = Math.min(video.currentTime + S, video.duration || 0); }
+        else if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') { e.preventDefault(); video.currentTime = Math.max(video.currentTime - S, 0); }
+      });
+      container.appendChild(video);
+    });
   }
   else if (type === 'audio') {
     const audio = document.createElement('audio');
@@ -818,18 +1022,7 @@ function closeAllModals() {
     player.src = '';
     player.load();
 
-    // Remove sidecar sync handlers if any were attached
-    if (player._sidecarHandlers) {
-      var h = player._sidecarHandlers;
-      player.removeEventListener('play', h.syncPlay);
-      player.removeEventListener('pause', h.syncPause);
-      player.removeEventListener('seeking', h.syncSeeking);
-      player.removeEventListener('seeked', h.syncSeeked);
-      player.removeEventListener('waiting', h.syncWaiting);
-      player.removeEventListener('playing', h.syncPlaying);
-      player.removeEventListener('timeupdate', h.syncTimeupdate);
-      delete player._sidecarHandlers;
-    }
+    removeSidecarHandlers(player);
   });
 
   // Clear sidecar audio element

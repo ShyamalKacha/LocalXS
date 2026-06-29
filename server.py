@@ -256,7 +256,8 @@ def api_list_files():
             # Check for sidecar audio file (browser-incompatible audio codec workaround)
             has_sidecar = False
             if not is_dir and file_type == 'video':
-                has_sidecar = os.path.exists(full_path + ".audio.m4a")
+                sidecar_check = _get_audio_sidecar_path(full_path, 0)
+                has_sidecar = os.path.exists(sidecar_check)
 
             items.append({
                 "name": name,
@@ -334,15 +335,33 @@ def _needs_sidecar(abs_path):
         return False
     return any(a.get('codec_name') not in _SUPPORTED_AUDIO_CODECS for a in audio_streams)
 
-@app.route("/api/extract_sidecar/<path:req_path>", methods=["POST"])
+def _get_audio_sidecar_path(abs_path, track_index):
+    """Return the sidecar path for a given audio track index (0-based among audio streams).
+
+    Naming convention:
+      - Track 0:  <video>.audio.m4a   (legacy) OR <video>.audio.0.m4a
+      - Track N:  <video>.audio.{N}.m4a
+    """
+    if track_index == 0:
+        legacy = abs_path + ".audio.m4a"
+        if os.path.exists(legacy):
+            return legacy
+        indexed = abs_path + ".audio.0.m4a"
+        if os.path.exists(indexed):
+            return indexed
+        return legacy  # return the legacy path (caller will create it)
+    return abs_path + f".audio.{track_index}.m4a"
+
+def _sidecar_path_for_req(req_path, track_index):
+    """Return the relative URL-side sidecar path (for API responses)."""
+    if track_index == 0:
+        return req_path + ".audio.m4a"
+    return req_path + f".audio.{track_index}.m4a"
+
+@app.route("/api/audio_tracks/<path:req_path>", methods=["GET"])
 @login_required
-def api_extract_sidecar(req_path):
-    """
-    On-demand sidecar audio extraction.
-    Probes the video, and if it contains unsupported audio, extracts the first
-    audio track as a high-quality AAC file alongside the original.
-    Returns { "extracted": true/false, "sidecar_path": "..." }
-    """
+def api_audio_tracks(req_path):
+    """Return all audio tracks for a video file with compatibility info."""
     try:
         abs_path = safe_join(BASE_DIR, req_path)
     except PermissionError as pe:
@@ -353,26 +372,106 @@ def api_extract_sidecar(req_path):
     if os.path.isdir(abs_path):
         return jsonify({"error": "Not a file"}), 400
 
-    sidecar_path = abs_path + ".audio.m4a"
-    if os.path.exists(sidecar_path):
-        return jsonify({"extracted": True, "sidecar_path": req_path + ".audio.m4a"})
+    info = _get_ffprobe_streams(abs_path)
+    if not info:
+        return jsonify({"error": "Could not probe file"}), 500
 
-    if not _needs_sidecar(abs_path):
-        return jsonify({"extracted": False, "reason": "audio codec already supported"})
+    # Collect audio streams in order, with 0-based audio-track numbering
+    audio_streams = [s for s in info.get('streams', []) if s.get('codec_type') == 'audio']
+    tracks = []
+    for audio_idx, s in enumerate(audio_streams):
+        codec = s.get('codec_name', 'unknown')
+        supported = codec in _SUPPORTED_AUDIO_CODECS
+        sidecar_path = _get_audio_sidecar_path(abs_path, audio_idx)
+        has_sidecar = os.path.exists(sidecar_path)
+        tags = s.get('tags', {})
+
+        tracks.append({
+            "index": audio_idx,                          # 0-based audio-track number
+            "stream_index": s.get('index', audio_idx),   # ffprobe global stream index
+            "codec": codec,
+            "language": tags.get('language', 'und') or 'und',
+            "title": tags.get('title', '') or '',
+            "channels": s.get('channels', 0),
+            "sample_rate": s.get('sample_rate', ''),
+            "supported": supported,
+            "has_sidecar": has_sidecar
+        })
+
+    return jsonify({"tracks": tracks})
+
+@app.route("/api/extract_sidecar/<path:req_path>", methods=["POST"])
+@login_required
+def api_extract_sidecar(req_path):
+    """
+    On-demand sidecar audio extraction for a specific track.
+    Accepts optional JSON body: { "track_index": <int> } (default 0).
+
+    - Supported codecs (AAC only): stream copy (lossless, instant)
+    - All other codecs (MP3, Opus, Vorbis, FLAC, AC-3, DTS, TrueHD, etc.):
+      transcode to AAC 320k for maximum browser compatibility.
+    """
+    data = request.get_json(silent=True) or {}
+    track_index = data.get("track_index", 0)
+
+    try:
+        abs_path = safe_join(BASE_DIR, req_path)
+    except PermissionError as pe:
+        return jsonify({"error": str(pe)}), 403
+
+    if not os.path.exists(abs_path):
+        return jsonify({"error": "File not found"}), 404
+    if os.path.isdir(abs_path):
+        return jsonify({"error": "Not a file"}), 400
+
+    sidecar_path = _get_audio_sidecar_path(abs_path, track_index)
+    sidecar_rel  = _sidecar_path_for_req(req_path, track_index)
+
+    if os.path.exists(sidecar_path):
+        return jsonify({"extracted": True, "sidecar_path": sidecar_rel})
+
+    # Probe the file to find the audio stream for this track
+    info = _get_ffprobe_streams(abs_path)
+    if not info:
+        return jsonify({"error": "Could not probe file"}), 500
+
+    audio_streams = [s for s in info.get('streams', []) if s.get('codec_type') == 'audio']
+    if track_index >= len(audio_streams):
+        return jsonify({"error": f"Track index {track_index} out of range"}), 400
+
+    stream = audio_streams[track_index]
+    codec = stream.get('codec_name', 'unknown')
+    stream_index = stream.get('index', track_index)
+
+    use_stream_copy = (codec == 'aac')
+
+    if use_stream_copy:
+        # Stream copy — lossless, no quality loss
+        ffmpeg_cmd = [
+            'ffmpeg', '-i', abs_path,
+            '-map', f'0:{stream_index}',
+            '-c:a', 'copy',
+            '-y', sidecar_path
+        ]
+    else:
+        # Transcode to AAC at max quality
+        ffmpeg_cmd = [
+            'ffmpeg', '-i', abs_path,
+            '-map', f'0:{stream_index}',
+            '-c:a', 'aac',
+            '-b:a', '320k',
+            '-y', sidecar_path
+        ]
 
     try:
         subprocess.run(
-            ['ffmpeg', '-i', abs_path,
-             '-map', '0:a:0',
-             '-c:a', 'aac',
-             '-b:a', '320k',
-             '-y', sidecar_path],
+            ffmpeg_cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=True, timeout=600
         )
         audit_log("EXTRACT_SIDECAR", mask_path(sidecar_path), request.remote_addr or "unknown")
-        return jsonify({"extracted": True, "sidecar_path": req_path + ".audio.m4a"})
+        return jsonify({"extracted": True, "sidecar_path": sidecar_rel})
     except subprocess.TimeoutExpired:
         if os.path.exists(sidecar_path):
             os.remove(sidecar_path)
