@@ -434,13 +434,12 @@ async function fetchAudioTracks(path) {
 function removeSidecarHandlers(video) {
   if (video._sidecarHandlers) {
     var h = video._sidecarHandlers;
-    video.removeEventListener('play', h.syncPlay);
-    video.removeEventListener('pause', h.syncPause);
-    video.removeEventListener('seeking', h.syncSeeking);
-    video.removeEventListener('seeked', h.syncSeeked);
-    video.removeEventListener('waiting', h.syncWaiting);
-    video.removeEventListener('playing', h.syncPlaying);
-    video.removeEventListener('timeupdate', h.syncTimeupdate);
+    video.removeEventListener('play', h.play);
+    video.removeEventListener('pause', h.pause);
+    video.removeEventListener('seeking', h.seeking);
+    video.removeEventListener('seeked', h.seeked);
+    video.removeEventListener('ratechange', h.ratechange);
+    if (h.rafId) cancelAnimationFrame(h.rafId);
     delete video._sidecarHandlers;
   }
 }
@@ -449,56 +448,85 @@ function removeSidecarHandlers(video) {
 function setupSidecarSync(video, sidecarAudio, sidecarUrl) {
   removeSidecarHandlers(video);
 
+  // CRITICAL FIX 1: Kill native audio completely to prevent phase interference (echo/jitter)
+  video.muted = true;
+  video.volume = 0;
+
   sidecarAudio.src = sidecarUrl;
   sidecarAudio.load();
 
-  var isSyncing = false;
+  var playHandler = function() {
+    sidecarAudio.currentTime = video.currentTime;
+    sidecarAudio.playbackRate = video.playbackRate || 1.0;
+    sidecarAudio.play().catch(function() {});
 
-  var syncPlay = function() {
-    if (sidecarAudio.src && !sidecarAudio.src.endsWith('/')) {
-      sidecarAudio.currentTime = video.currentTime;
-      sidecarAudio.play().catch(function() {});
+    // Start the 60FPS sync loop
+    function syncLoop() {
+      if (!video.paused && !video.ended) {
+        var diff = video.currentTime - sidecarAudio.currentTime;
+        var absDiff = Math.abs(diff);
+        var baseRate = video.playbackRate || 1.0;
+
+        // CRITICAL FIX 2: If drift is > 150ms, gently glide the audio speed
+        // This prevents buffer flushing (which causes the clipping sound)
+        if (absDiff > 0.15) {
+          // Video is ahead -> speed up audio by 5%
+          // Audio is ahead -> slow down audio by 5%
+          var adjustment = diff > 0 ? 1.05 : 0.95;
+          sidecarAudio.playbackRate = baseRate * adjustment;
+        } else {
+          // Perfectly in sync
+          sidecarAudio.playbackRate = baseRate;
+        }
+
+        video._sidecarHandlers.rafId = requestAnimationFrame(syncLoop);
+      }
     }
+    video._sidecarHandlers.rafId = requestAnimationFrame(syncLoop);
   };
-  var syncPause = function() { sidecarAudio.pause(); };
-  var syncSeeking = function() {
-    isSyncing = true;
+
+  var pauseHandler = function() {
+    if (video._sidecarHandlers && video._sidecarHandlers.rafId) {
+      cancelAnimationFrame(video._sidecarHandlers.rafId);
+    }
     sidecarAudio.pause();
   };
-  var syncSeeked = function() {
-    if (sidecarAudio.src && !sidecarAudio.src.endsWith('/')) {
-      sidecarAudio.currentTime = video.currentTime;
-      if (!video.paused) {
-        sidecarAudio.play().catch(function() {});
-      }
+
+  var seekingHandler = function() {
+    if (video._sidecarHandlers && video._sidecarHandlers.rafId) {
+      cancelAnimationFrame(video._sidecarHandlers.rafId);
     }
-    isSyncing = false;
+    sidecarAudio.pause();
   };
-  var syncWaiting = function() { sidecarAudio.pause(); };
-  var syncPlaying = function() {
-    if (sidecarAudio.src && !sidecarAudio.src.endsWith('/') && !video.paused) {
-      sidecarAudio.currentTime = video.currentTime;
+
+  var seekedHandler = function() {
+    // Hard sync is OK here ONLY because the user manually dragged the progress bar
+    sidecarAudio.currentTime = video.currentTime;
+    if (!video.paused) {
       sidecarAudio.play().catch(function() {});
-    }
-  };
-  var syncTimeupdate = function() {
-    if (sidecarAudio.src && !sidecarAudio.src.endsWith('/') && !isSyncing && !video.paused) {
-      var diff = Math.abs(video.currentTime - sidecarAudio.currentTime);
-      if (diff > 0.3) {
-        sidecarAudio.currentTime = video.currentTime;
-      }
+      playHandler(); // Restart the 60FPS loop
     }
   };
 
-  video._sidecarHandlers = { syncPlay: syncPlay, syncPause: syncPause, syncSeeking: syncSeeking, syncSeeked: syncSeeked, syncWaiting: syncWaiting, syncPlaying: syncPlaying, syncTimeupdate: syncTimeupdate };
+  var ratechangeHandler = function() {
+    // Match audio speed if user changes video playback speed (e.g., 1.5x)
+    sidecarAudio.playbackRate = video.playbackRate || 1.0;
+  };
 
-  video.addEventListener('play', syncPlay);
-  video.addEventListener('pause', syncPause);
-  video.addEventListener('seeking', syncSeeking);
-  video.addEventListener('seeked', syncSeeked);
-  video.addEventListener('waiting', syncWaiting);
-  video.addEventListener('playing', syncPlaying);
-  video.addEventListener('timeupdate', syncTimeupdate);
+  video._sidecarHandlers = {
+    play: playHandler,
+    pause: pauseHandler,
+    seeking: seekingHandler,
+    seeked: seekedHandler,
+    ratechange: ratechangeHandler,
+    rafId: null
+  };
+
+  video.addEventListener('play', playHandler);
+  video.addEventListener('pause', pauseHandler);
+  video.addEventListener('seeking', seekingHandler);
+  video.addEventListener('seeked', seekedHandler);
+  video.addEventListener('ratechange', ratechangeHandler);
 
   video.play().catch(function() {});
 }
