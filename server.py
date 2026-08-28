@@ -676,10 +676,11 @@ if __name__ == "__main__":
     print(f"Username:       {USERNAME}")
     print(f"SSL/HTTPS Mode: {SSL_MODE.upper()}")
     print("=" * 60)
-    start_hotspot_keeper()
-    if not ensure_hotspot_on(timeout=30):
-        print("ERROR: Could not turn on hotspot within 30s. Exiting.")
+    if not ensure_hotspot_on(timeout=60):
+        print("ERROR: Could not start the Windows hotspot within 60s.")
+        print("       Enable the Wi-Fi adapter (or connect a LAN cable) and try again.")
         exit(1)
+    start_hotspot_keeper()
 
     if not wait_for_host_ip(HOST, timeout=15):
         print(f"ERROR: {HOST} not available after hotspot turned on. Exiting.")
