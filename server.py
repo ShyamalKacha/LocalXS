@@ -34,6 +34,9 @@ parser.add_argument("--user", default=DEFAULT_USERNAME, help="Username for authe
 parser.add_argument("--pwd", default=DEFAULT_PASSWORD, help="Password for authentication")
 parser.add_argument("--ssl", choices=['none', 'adhoc'], default='adhoc',
                     help="SSL mode: 'adhoc' (self-signed HTTPS, default) or 'none' (plain HTTP, insecure)")
+parser.add_argument("--mode", choices=['hotspot', 'lan'], default='hotspot',
+                    help="Network mode: 'hotspot' (start Windows Mobile Hotspot, default) "
+                         "or 'lan' (bind to an existing LAN IP, no hotspot)")
 args, unknown = parser.parse_known_args()
 
 BASE_DIR = os.path.abspath(args.dir)
@@ -42,6 +45,7 @@ PORT = args.port
 USERNAME = args.user
 PASSWORD_HASH = generate_password_hash(args.pwd)
 SSL_MODE = args.ssl
+MODE = args.mode
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
 
@@ -671,19 +675,28 @@ if __name__ == "__main__":
     print("=" * 60)
     print(f"Starting LocalXS Server")
     print(f"Base Directory: {BASE_DIR}")
+    print(f"Mode:           {MODE.upper()}")
     print(f"Host:           {HOST}")
     print(f"Port:           {PORT}")
     print(f"Username:       {USERNAME}")
     print(f"SSL/HTTPS Mode: {SSL_MODE.upper()}")
     print("=" * 60)
-    if not ensure_hotspot_on(timeout=60):
-        print("ERROR: Could not start the Windows hotspot within 60s.")
-        print("       Enable the Wi-Fi adapter (or connect a LAN cable) and try again.")
-        exit(1)
-    start_hotspot_keeper()
+    if MODE == 'hotspot':
+        if not ensure_hotspot_on(timeout=60):
+            print("ERROR: Could not start the Windows hotspot within 60s.")
+            print("       Enable the Wi-Fi adapter (or connect a LAN cable) and try again.")
+            exit(1)
+        start_hotspot_keeper()
+    else:
+        if HOST == DEFAULT_HOST:
+            print(f"WARNING: --mode lan with the hotspot default host {DEFAULT_HOST}.")
+            print(f"         Pass your machine's LAN IP instead, e.g. --host 192.168.1.14")
+        if HOST == "0.0.0.0":
+            print("WARNING: 0.0.0.0 listens on every interface (hotspot, LAN, virtual adapters).")
+            print("         Prefer one specific LAN IP via --host.")
 
     if not wait_for_host_ip(HOST, timeout=15):
-        print(f"ERROR: {HOST} not available after hotspot turned on. Exiting.")
+        print(f"ERROR: {HOST} is not available on this machine. Exiting.")
         exit(1)
 
     run_args = {

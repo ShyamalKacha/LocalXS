@@ -1,6 +1,6 @@
 # LocalXS — Local eXtended Server
 
-A lightweight, secure HTTPS file sharing and media streaming server designed for local networks. Built with Python and Flask, it runs entirely offline with no external dependencies — ideal for sharing files and streaming media between devices on the same network (e.g., via Windows Mobile Hotspot).
+A lightweight, secure HTTPS file sharing and media streaming server designed for local networks. Built with Python and Flask, it runs entirely offline with no external dependencies — ideal for sharing files and streaming media between devices on the same network, either via Windows Mobile Hotspot (no internet uplink required) or over an existing home router network.
 
 ## Features
 
@@ -12,7 +12,8 @@ A lightweight, secure HTTPS file sharing and media streaming server designed for
 - **File Management** — Create folders, rename, and delete items directly from the web UI.
 - **Search & Filter** — Live client-side search to quickly find files by name.
 - **Audit Logging** — All actions (login, upload, delete, rename) are logged to `server_audit.log`.
-- **Auto Hotspot** — Automatically enables Windows Mobile Hotspot and waits for the network interface to be ready before starting the server.
+- **Auto Hotspot (no internet required)** — Automatically enables Windows Mobile Hotspot and waits for the network interface to be ready before starting the server. Works in fully isolated environments with no internet uplink, and re-enables the hotspot if Windows turns it off.
+- **Home LAN Mode** — `--mode lan` skips the hotspot and serves over an existing network (e.g., your home router) instead.
 
 ## Requirements
 
@@ -42,11 +43,13 @@ python server.py
 ```
 
 The server will:
-1. Check/turn on Windows Mobile Hotspot (if the host IP is `192.168.137.1`)
-2. Wait for the network interface to be ready
+1. Turn on Windows Mobile Hotspot (works without any internet uplink)
+2. Wait for the hotspot interface (`192.168.137.1`) to be ready
 3. Serve the web app at `https://192.168.137.1:8000`
 
-Open `https://192.168.137.1:8000` in any device on the same network and log in.
+Connect your device to the hotspot, open `https://192.168.137.1:8000`, and log in.
+
+To share over an existing home router network instead, see [Network Modes](#network-modes).
 
 ## Usage
 
@@ -60,6 +63,7 @@ Open `https://192.168.137.1:8000` in any device on the same network and log in.
 | `--user` | `admin` | Login username |
 | `--pwd` | `1234` | Login password |
 | `--ssl` | `adhoc` | `adhoc` for HTTPS or `none` for plain HTTP |
+| `--mode` | `hotspot` | `hotspot` (start Windows Mobile Hotspot) or `lan` (bind to an existing network, no hotspot) |
 
 Example with custom directory and plain HTTP:
 ```bash
@@ -73,6 +77,37 @@ python server.py --dir "D:\shared" --ssl none
 - **Upload** — Use the upload button in the header to add files to the current directory.
 - **Stream** — Click video/audio files to preview/stream them in-browser.
 - **Manage** — Right-click or use the context menu to rename, delete, or create folders.
+
+## Network Modes
+
+### Hotspot mode (default) — isolated, no internet required
+
+```bash
+python server.py
+```
+
+The server turns on Windows Mobile Hotspot automatically and binds to the hotspot interface (`192.168.137.1`). No internet uplink is needed — the hotspot is anchored on the Wi-Fi adapter itself, so this works in fully isolated environments. A background keeper re-enables the hotspot if Windows turns it off (power saving).
+
+Devices join the hotspot SSID and open `https://192.168.137.1:8000`.
+
+### LAN mode — share over your home router
+
+```bash
+python server.py --mode lan --host 192.168.1.14
+```
+
+Skips the hotspot entirely and binds to your machine's existing LAN IP, making the server reachable by every device on the home network.
+
+Setup checklist:
+
+1. **Firewall** — create one inbound rule (*Windows Defender Firewall with Advanced Security* → Inbound Rules → New Rule → **Custom**):
+   - Protocol: TCP, local port `8000`
+   - Local IP: your machine's LAN IP (e.g. `192.168.1.14`)
+   - Remote IP: your LAN subnet only (e.g. `192.168.1.0/24`)
+   - Action: allow the connection; name it e.g. `LocalXS (home LAN 8000)`
+2. **DHCP reservation** — reserve the machine's IP in the router admin page so it doesn't change.
+3. **No port forwarding** — never forward port 8000 in the router; NAT is what keeps the server invisible from the internet.
+4. **Strong password** — set `ADMIN_PASSWORD` in `.env`; the default `1234` is unsafe on a shared network.
 
 ## Project Details
 
@@ -97,6 +132,7 @@ LocalXS/
 │   ├── css/style.css      # Styles
 │   ├── js/app.js          # Frontend logic
 │   └── favicon.svg        # Tab icon
+├── test/                  # Hotspot probe & verification scripts
 └── shared/                # Default shared directory (created on first run)
 ```
 
